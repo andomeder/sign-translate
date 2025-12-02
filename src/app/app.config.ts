@@ -1,4 +1,4 @@
-import {ApplicationConfig} from '@angular/core';
+import {ApplicationConfig, APP_INITIALIZER} from '@angular/core';
 import {provideRouter, RouteReuseStrategy} from '@angular/router';
 
 import {routes} from './app.routes';
@@ -27,6 +27,34 @@ export const ngxsConfig: NgxsModuleOptions = {
     strictContentSecurityPolicy: true,
   },
 };
+
+// Factory function to load Stencil components ONLY in the browser
+function initializeStencilComponents() {
+  return () => {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      // Check if running in Tauri
+      const isTauri = (window as any).__TAURI__ !== undefined;
+
+      // Extra delay for Tauri
+      const delay = isTauri ? 2000 : 500;
+
+      return new Promise<void>(resolve => {
+        setTimeout(async () => {
+          console.log(`🔧 Initializing Stencil (${isTauri ? 'Tauri' : 'Browser'} mode, ${delay}ms delay)`);
+          try {
+            const module = await import('pose-viewer/loader');
+            await module.defineCustomElements(window);
+            console.log('✓ Stencil components loaded');
+          } catch (error) {
+            console.error('✗ Failed to load Stencil:', error);
+          }
+          resolve();
+        }, delay);
+      });
+    }
+    return Promise.resolve();
+  };
+}
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -57,5 +85,12 @@ export const appConfig: ApplicationConfig = {
     ...AppTranslocoProviders,
 
     provideStore([SettingsState], ngxsConfig),
+
+    // Initialize Stencil components (pose-viewer) in browser only
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeStencilComponents,
+      multi: true,
+    },
   ],
 };
