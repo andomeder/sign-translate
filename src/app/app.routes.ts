@@ -8,6 +8,22 @@ import {MainComponent} from './pages/main.component';
 
 export const routes: Routes = [
   {
+    path: 'renderer',
+    loadComponent: () => import('./pages/translate/renderer/renderer.component').then(m => m.RendererComponent),
+    providers: [
+      provideStates([TranslateState]),
+      {
+        provide: LanguageDetectionService,
+        useClass: MediaPipeLanguageDetectionService,
+      },
+    ],
+  },
+  {
+    path: 'renderer',
+    loadComponent: () => import('./pages/translate/renderer/renderer.component').then(m => m.RendererComponent),
+    providers: [provideStates([TranslateState])],
+  },
+  {
     path: 'playground',
     loadComponent: () => import('./pages/playground/playground.component').then(m => m.PlaygroundComponent),
   },
