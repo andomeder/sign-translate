@@ -163,7 +163,6 @@ export class RendererComponent implements OnInit, OnDestroy {
 
       this.ws.onclose = () => {
         console.log('🔌 Disconnected from daemon');
-        // Optionally reconnect after delay
         setTimeout(() => this.connectToDaemon(), 5000);
       };
     } catch (error) {
