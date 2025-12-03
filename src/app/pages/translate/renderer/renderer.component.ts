@@ -18,8 +18,8 @@ interface Chunk {
       <app-signed-language-output></app-signed-language-output>
       <div class="debug-info" *ngIf="showDebug">
         <div>Playback: {{ isPlaying ? '▶️' : '⏸️' }}</div>
-        <div>Current: {{ currentTime.toFixed(1) }}s</div>
         <div>Chunk: {{ currentChunkIndex + 1 }}/{{ chunks.length }}</div>
+        <div>Animating: {{ isAnimating ? '🎨' : '✅' }}</div>
         <div *ngIf="chunks.length > 0">Text: {{ getCurrentChunkText() }}</div>
       </div>
     </div>
@@ -179,7 +179,12 @@ export class RendererComponent implements OnInit, OnDestroy {
   }
 
   private loadQueue(chunks: Chunk[], serverStartTime?: number): void {
-    console.log(`📋 Loaded ${chunks.length} chunks`);
+    console.log(`📋 Loading queue with ${chunks.length} chunks`);
+    console.log(
+      'Chunks:',
+      chunks.map(c => `t=${c.timestamp}s: "${c.text.substring(0, 30)}..."`)
+    );
+
     this.chunks = chunks.sort((a, b) => a.timestamp - b.timestamp);
     this.currentChunkIndex = -1;
 
@@ -342,6 +347,13 @@ export class RendererComponent implements OnInit, OnDestroy {
       return this.chunks[this.currentChunkIndex].text.substring(0, 50) + '...';
     }
     return '';
+  }
+
+  getNextChunkTime(): string {
+    if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length - 1) {
+      return this.chunks[this.currentChunkIndex + 1].timestamp.toFixed(1);
+    }
+    return 'end';
   }
 
   // Optional: keyboard controls
