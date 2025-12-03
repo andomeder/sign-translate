@@ -137,6 +137,9 @@ export class RendererComponent implements OnInit, OnDestroy {
             case 'PLAYBACK_QUEUE':
               this.loadQueue(data.queue, data.start_time);
               break;
+            case 'PLAYBACK_APPEND':
+              this.appendChunks(data.chunks);
+              break;
             case 'PLAYBACK_START':
               this.startPlayback(data.start_time);
               break;
@@ -185,7 +188,35 @@ export class RendererComponent implements OnInit, OnDestroy {
     this.startTime = serverStartTime || now;
     this.isPlaying = true;
 
-    console.log(`▶️ Playback started at ${this.startTime}`);
+    console.log(`▶️ Playback started at ${this.startTime}, current time: ${now}, chunks: ${this.chunks.length}`);
+  }
+
+  private appendChunks(newChunks: Chunk[]): void {
+    console.log(`➕ Appending ${newChunks.length} chunks to existing queue`);
+    console.log(
+      'New chunks:',
+      newChunks.map(c => `t=${c.timestamp}s: "${c.text}"`)
+    );
+
+    // If we don't have a playback session yet (missed the initial QUEUE),
+    // treat this as the first queue
+    if (!this.isPlaying && this.chunks.length === 0) {
+      console.log('⚠️ No active playback - treating append as new queue');
+      this.chunks = [...newChunks];
+      this.chunks.sort((a, b) => a.timestamp - b.timestamp);
+      this.currentChunkIndex = -1;
+      this.startTime = Date.now() / 1000;
+      this.isPlaying = true;
+      console.log(`▶️ Started playback with ${this.chunks.length} chunks`);
+      return;
+    }
+
+    // Add new chunks to existing queue
+    this.chunks.push(...newChunks);
+    this.chunks.sort((a, b) => a.timestamp - b.timestamp);
+
+    console.log(`📋 Total chunks now: ${this.chunks.length}`);
+    console.log(`Current playback time: ${this.currentTime.toFixed(1)}s, on chunk ${this.currentChunkIndex + 1}`);
   }
 
   private startPlayback(startTime?: number): void {
