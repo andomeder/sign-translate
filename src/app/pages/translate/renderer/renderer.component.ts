@@ -95,8 +95,13 @@ export class RendererComponent implements OnInit, OnDestroy {
   // For handling pause/resume
   pausedAt = 0;
 
+  // Animation timing
+  isAnimating = false;
+  animationStartTime = 0;
+
   private animationFrameId: number | null = null;
-  private readonly CHUNK_DISPLAY_DURATION = 4; // seconds per chunk
+  private readonly MIN_CHUNK_DURATION = 4; // Minimum 4 seconds per chunk
+  private readonly ESTIMATED_ANIMATION_TIME = 7; // Estimate 7 seconds for animations
 
   ngOnInit(): void {
     if (isPlatformBrowser(this.platformId)) {
@@ -238,7 +243,7 @@ export class RendererComponent implements OnInit, OnDestroy {
       const chunk = this.chunks[i];
       const nextChunk = this.chunks[i + 1];
 
-      const chunkEnd = nextChunk ? nextChunk.timestamp : chunk.timestamp + this.CHUNK_DISPLAY_DURATION;
+      const chunkEnd = nextChunk ? nextChunk.timestamp : chunk.timestamp + this.ESTIMATED_ANIMATION_TIME;
 
       if (time >= chunk.timestamp && time < chunkEnd) {
         return i;
@@ -252,30 +257,28 @@ export class RendererComponent implements OnInit, OnDestroy {
   private startPlaybackLoop(): void {
     const loop = () => {
       if (this.isPlaying && this.chunks.length > 0) {
-        // Calculate current playback time
-        this.currentTime = Date.now() / 1000 - this.startTime;
+        const now = Date.now() / 1000;
+        this.currentTime = now - this.startTime;
 
-        // Find which chunk should be playing now
-        const targetChunkIndex = this.findChunkIndexAtTime(this.currentTime);
-
-        // If we've moved to a new chunk, display it
-        if (targetChunkIndex !== this.currentChunkIndex && targetChunkIndex >= 0) {
-          this.currentChunkIndex = targetChunkIndex;
-          const chunk = this.chunks[targetChunkIndex];
-
-          console.log(
-            `🎬 Playing chunk ${targetChunkIndex + 1}/${this.chunks.length} at ${this.currentTime.toFixed(1)}s: "${chunk.text}"`
-          );
-          this.store.dispatch(new SetSpokenLanguageText(chunk.text));
+        // If we haven't started yet, play the first chunk
+        if (this.currentChunkIndex === -1 && this.chunks.length > 0) {
+          this.playChunk(0);
         }
+        // Check if we should advance to the next chunk
+        else if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length - 1) {
+          const timeSinceLastAnimation = now - this.animationStartTime;
 
-        // Check if we've finished all chunks
-        if (this.currentChunkIndex >= this.chunks.length - 1) {
-          const lastChunk = this.chunks[this.chunks.length - 1];
-          const playbackEnd = lastChunk.timestamp + this.CHUNK_DISPLAY_DURATION;
-
-          if (this.currentTime > playbackEnd) {
-            console.log('✓ Playback complete');
+          // Advance if enough time has passed
+          if (timeSinceLastAnimation >= this.MIN_CHUNK_DURATION) {
+            const nextIndex = this.currentChunkIndex + 1;
+            this.playChunk(nextIndex);
+          }
+        }
+        // Check if we're completely done
+        else if (this.currentChunkIndex >= this.chunks.length - 1) {
+          const timeSinceLastAnimation = now - this.animationStartTime;
+          if (timeSinceLastAnimation > this.ESTIMATED_ANIMATION_TIME) {
+            console.log('✓ Playback complete - all animations finished');
             this.stopPlayback();
           }
         }
@@ -285,6 +288,22 @@ export class RendererComponent implements OnInit, OnDestroy {
     };
 
     loop();
+  }
+
+  private playChunk(index: number): void {
+    if (index < 0 || index >= this.chunks.length || index === this.currentChunkIndex) {
+      return;
+    }
+
+    this.currentChunkIndex = index;
+    const chunk = this.chunks[index];
+    const now = Date.now() / 1000;
+
+    this.isAnimating = true;
+    this.animationStartTime = now;
+
+    console.log(`🎬 Playing chunk ${index + 1}/${this.chunks.length}: "${chunk.text}"`);
+    this.store.dispatch(new SetSpokenLanguageText(chunk.text));
   }
 
   getCurrentChunkText(): string {
