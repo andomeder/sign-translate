@@ -526,26 +526,4 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     }
     return 'end';
   }
-
-  // Optional: keyboard controls
-  private handleKeyPress(event: KeyboardEvent): void {
-    if (!this.ws) return;
-
-    switch (event.key) {
-      case ' ':
-        // Space bar to pause/resume
-        const command = this.isPlaying ? 'PLAYBACK_PAUSE' : 'PLAYBACK_RESUME';
-        this.ws.send(JSON.stringify({type: command}));
-        break;
-      case 'ArrowLeft':
-        // Seek back 5 seconds
-        const newTime = Math.max(0, this.currentTime - 5);
-        this.ws.send(JSON.stringify({type: 'PLAYBACK_SEEK', time: newTime}));
-        break;
-      case 'ArrowRight':
-        // Seek forward 5 seconds
-        this.ws.send(JSON.stringify({type: 'PLAYBACK_SEEK', time: this.currentTime + 5}));
-        break;
-    }
-  }
 }
