@@ -57,6 +57,7 @@ interface Chunk {
         position: relative;
       }
 
+      z-index: 1000;
       .debug-info {
         position: absolute;
         top: 10px;
@@ -68,7 +69,6 @@ interface Chunk {
         font-family: monospace;
         font-size: 12px;
         max-width: 300px;
-        z-index: 1000;
       }
 
       .debug-info div {
