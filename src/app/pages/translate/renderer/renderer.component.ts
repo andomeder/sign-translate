@@ -368,6 +368,7 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
       console.log('[Renderer] No active playback - treating append as new queue');
       this.chunks = [...newChunks];
       this.chunks.sort((a, b) => a.timestamp - b.timestamp);
+      const previousLength = this.chunks.length;
       this.currentChunkIndex = -1;
       this.startTime = Date.now() / 1000;
       this.isPlaying = true;
@@ -379,7 +380,6 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     // Add new chunks to existing queue
-    const previousLength = this.chunks.length;
     this.chunks.push(...newChunks);
     this.chunks.sort((a, b) => a.timestamp - b.timestamp);
 
