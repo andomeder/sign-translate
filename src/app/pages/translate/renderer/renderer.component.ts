@@ -30,12 +30,10 @@ interface Chunk {
     <div class="renderer-container" #containerRef>
       <app-signed-language-output></app-signed-language-output>
       <div class="debug-info" *ngIf="showDebug">
-        <div>Playback: {{ isPlaying ? 'PLAY' : 'STOP' }}</div>
         <div>Chunk: {{ currentChunkIndex + 1 }}/{{ chunks.length }}</div>
-        <div>Animating: {{ isAnimating ? 'YES' : 'NO' }}</div>
-        <div>Queue: {{ chunks.length - currentChunkIndex - 1 }} pending</div>
-        <div>Idle: {{ idleSeconds.toFixed(0) }}s</div>
-        <div *ngIf="chunks.length > 0">Text: {{ getCurrentChunkText() }}</div>
+        <div>Pending: {{ getPendingCount() }}</div>
+        <div>{{ isAnimating ? 'SIGNING' : 'READY' }}</div>
+        <div *ngIf="chunks.length > 0" class="chunk-text">{{ getCurrentChunkText() }}</div>
       </div>
     </div>
   `,
@@ -57,22 +55,29 @@ interface Chunk {
         position: relative;
       }
 
-      z-index: 1000;
       .debug-info {
+        z-index: 1000;
         position: absolute;
         top: 10px;
         right: 10px;
         background: rgba(0, 0, 0, 0.8);
         color: #4caf50;
-        padding: 10px;
+        padding: 8px 12px;
         border-radius: 5px;
         font-family: monospace;
-        font-size: 12px;
-        max-width: 300px;
+        font-size: 11px;
+        max-width: 250px;
       }
 
       .debug-info div {
         margin: 2px 0;
+      }
+
+      .debug-info .chunk-text {
+        color: #fff;
+        font-size: 10px;
+        opacity: 0.8;
+        word-wrap: break-word;
       }
 
       ::ng-deep pose-viewer {
@@ -127,8 +132,12 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
 
   // Fallback timeout for animations that don't emit ended$
   private animationFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
-  private readonly MAX_ANIMATION_TIME = 15; // Max 15 seconds per animation as fallback
-  private readonly MIN_ANIMATION_TIME = 2; // Minimum 2 seconds before allowing advance
+  private readonly MAX_ANIMATION_TIME = 8; // Max 8 seconds per animation as fallback
+  private readonly MIN_ANIMATION_TIME = 0.5; // Minimum 0.5 seconds before allowing advance
+
+  // Queue management
+  private readonly MAX_QUEUE_SIZE = 10; // Compress queue if more than 10 chunks pending
+  private readonly QUEUE_COMPRESSION_TARGET = 5; // Compress down to 5 chunks
 
   // Track animation start for minimum time enforcement
   private animationStartTime = 0;
@@ -295,6 +304,9 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
             case 'PLAYBACK_APPEND':
               this.appendChunks(data.chunks);
               break;
+            case 'PLAYBACK_REPLACE_PENDING':
+              this.replacePendingChunks(data.chunks);
+              break;
             case 'PLAYBACK_START':
               this.startPlayback(data.start_time);
               break;
@@ -363,12 +375,14 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     this.lastChunkReceivedTime = Date.now() / 1000;
     this.idleSeconds = 0;
 
+    // Track the previous length before adding new chunks
+    const previousLength = this.chunks.length;
+
     // If we don't have a playback session yet, treat this as the first queue
     if (!this.isPlaying && this.chunks.length === 0) {
       console.log('[Renderer] No active playback - treating append as new queue');
       this.chunks = [...newChunks];
       this.chunks.sort((a, b) => a.timestamp - b.timestamp);
-      const previousLength = this.chunks.length;
       this.currentChunkIndex = -1;
       this.startTime = Date.now() / 1000;
       this.isPlaying = true;
@@ -383,13 +397,91 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     this.chunks.push(...newChunks);
     this.chunks.sort((a, b) => a.timestamp - b.timestamp);
 
-    console.log(`[Renderer] Total chunks: ${this.chunks.length}, current: ${this.currentChunkIndex + 1}`);
+    // Check if queue is getting too long - compress pending chunks
+    const pendingCount = this.chunks.length - this.currentChunkIndex - 1;
+    if (pendingCount > this.MAX_QUEUE_SIZE) {
+      this.compressQueue();
+    }
+
+    console.log(
+      `[Renderer] Total chunks: ${this.chunks.length}, current: ${this.currentChunkIndex + 1}, pending: ${pendingCount}`
+    );
 
     // If we were waiting for more chunks (finished all previous), start the new ones
     if (!this.isAnimating && this.currentChunkIndex >= previousLength - 1 && this.chunks.length > previousLength) {
       console.log('[Renderer] Was idle, starting new chunk');
       this.playChunk(this.currentChunkIndex + 1);
     }
+  }
+
+  /**
+   * Compress the pending queue by combining multiple chunks into summaries
+   * This prevents the renderer from falling too far behind
+   */
+  private compressQueue(): void {
+    const pendingStartIndex = this.currentChunkIndex + 1;
+    const pendingChunks = this.chunks.slice(pendingStartIndex);
+
+    if (pendingChunks.length <= this.QUEUE_COMPRESSION_TARGET) {
+      return;
+    }
+
+    console.log(
+      `[Renderer] Compressing queue: ${pendingChunks.length} pending -> ${this.QUEUE_COMPRESSION_TARGET} chunks`
+    );
+
+    // Group pending chunks into QUEUE_COMPRESSION_TARGET groups
+    const groupSize = Math.ceil(pendingChunks.length / this.QUEUE_COMPRESSION_TARGET);
+    const compressedChunks: Chunk[] = [];
+
+    for (let i = 0; i < pendingChunks.length; i += groupSize) {
+      const group = pendingChunks.slice(i, i + groupSize);
+      const combinedText = group.map(c => c.text).join(' ');
+      const firstTimestamp = group[0].timestamp;
+
+      compressedChunks.push({
+        text: combinedText,
+        timestamp: firstTimestamp,
+      });
+    }
+
+    // Replace pending chunks with compressed ones
+    this.chunks = [...this.chunks.slice(0, pendingStartIndex), ...compressedChunks];
+
+    console.log(`[Renderer] Queue compressed to ${this.chunks.length} total chunks`);
+
+    // Send compressed chunks back to daemon for re-summarization
+    this.requestSummarization(compressedChunks);
+  }
+
+  /**
+   * Request the daemon to summarize compressed chunks
+   */
+  private requestSummarization(chunks: Chunk[]): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const message = {
+        type: 'SUMMARIZE_CHUNKS',
+        chunks: chunks,
+      };
+      this.ws.send(JSON.stringify(message));
+      console.log('[Renderer] Requested summarization of compressed chunks');
+    }
+  }
+
+  /**
+   * Replace pending chunks with summarized versions from daemon
+   */
+  private replacePendingChunks(newChunks: Chunk[]): void {
+    if (!newChunks || newChunks.length === 0) {
+      return;
+    }
+
+    const pendingStartIndex = this.currentChunkIndex + 1;
+
+    // Replace all pending chunks with the new summarized ones
+    this.chunks = [...this.chunks.slice(0, pendingStartIndex), ...newChunks];
+
+    console.log(`[Renderer] Replaced pending chunks with ${newChunks.length} summarized chunks`);
   }
 
   private startPlayback(startTime?: number): void {
@@ -515,9 +607,13 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
   getCurrentChunkText(): string {
     if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length) {
       const text = this.chunks[this.currentChunkIndex].text;
-      return text.length > 50 ? text.substring(0, 50) + '...' : text;
+      return text.length > 40 ? text.substring(0, 40) + '...' : text;
     }
     return '';
+  }
+
+  getPendingCount(): number {
+    return Math.max(0, this.chunks.length - this.currentChunkIndex - 1);
   }
 
   getNextChunkTime(): string {
