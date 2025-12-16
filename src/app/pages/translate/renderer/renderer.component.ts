@@ -1,8 +1,21 @@
-import {Component, inject, OnInit, OnDestroy, PLATFORM_ID, CUSTOM_ELEMENTS_SCHEMA} from '@angular/core';
+import {
+  Component,
+  inject,
+  OnInit,
+  OnDestroy,
+  PLATFORM_ID,
+  CUSTOM_ELEMENTS_SCHEMA,
+  AfterViewInit,
+  ElementRef,
+  ViewChild,
+  NgZone,
+} from '@angular/core';
 import {CommonModule, isPlatformBrowser} from '@angular/common';
 import {Store} from '@ngxs/store';
 import {SignedLanguageOutputComponent} from '../spoken-to-signed/signed-language-output/signed-language-output.component';
 import {SetSpokenLanguageText} from '../../../modules/translate/translate.actions';
+import {fromEvent, Subject, Subscription, interval} from 'rxjs';
+import {takeUntil, filter} from 'rxjs/operators';
 
 interface Chunk {
   text: string;
@@ -79,10 +92,14 @@ interface Chunk {
   ],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
 })
-export class RendererComponent implements OnInit, OnDestroy {
+export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
+  @ViewChild('containerRef') containerRef!: ElementRef<HTMLElement>;
+
   private store = inject(Store);
   private platformId = inject(PLATFORM_ID);
+  private ngZone = inject(NgZone);
   private ws: WebSocket | null = null;
+  private destroy$ = new Subject<void>();
 
   // Playback state
   chunks: Chunk[] = [];
@@ -95,29 +112,164 @@ export class RendererComponent implements OnInit, OnDestroy {
   // For handling pause/resume
   pausedAt = 0;
 
-  // Animation timing
+  // Animation state - now event-driven instead of time-based
   isAnimating = false;
-  animationStartTime = 0;
+  private poseViewerSubscription: Subscription | null = null;
+  private currentPoseViewer: HTMLElement | null = null;
 
-  private animationFrameId: number | null = null;
-  private readonly MIN_CHUNK_DURATION = 4; // Minimum 4 seconds per chunk
-  private readonly ESTIMATED_ANIMATION_TIME = 7; // Estimate 7 seconds for animations
+  // Idle detection
+  private lastChunkReceivedTime = 0;
+  private readonly IDLE_TIMEOUT_SECONDS = 30; // Stop if no new chunks for 30s
+  idleSeconds = 0;
+
+  // Fallback timeout for animations that don't emit ended$
+  private animationFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly MAX_ANIMATION_TIME = 15; // Max 15 seconds per animation as fallback
+  private readonly MIN_ANIMATION_TIME = 2; // Minimum 2 seconds before allowing advance
+
+  // Track animation start for minimum time enforcement
+  private animationStartTime = 0;
 
   ngOnInit(): void {
     if (isPlatformBrowser(this.platformId)) {
-      console.log('🚀 Renderer ready - connecting to daemon');
+      console.log('[Renderer] Ready - connecting to daemon');
       this.connectToDaemon();
-      this.startPlaybackLoop();
+      this.startIdleDetection();
+    }
+  }
+
+  ngAfterViewInit(): void {
+    // Set up a MutationObserver to detect when pose-viewer elements appear/change
+    if (isPlatformBrowser(this.platformId) && this.containerRef) {
+      this.setupPoseViewerObserver();
     }
   }
 
   ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
+
     if (this.ws) {
       this.ws.close();
     }
-    if (this.animationFrameId) {
-      cancelAnimationFrame(this.animationFrameId);
+    if (this.poseViewerSubscription) {
+      this.poseViewerSubscription.unsubscribe();
     }
+    if (this.animationFallbackTimeout) {
+      clearTimeout(this.animationFallbackTimeout);
+    }
+  }
+
+  /**
+   * Set up MutationObserver to detect pose-viewer elements in the DOM
+   * and subscribe to their ended$ events
+   */
+  private setupPoseViewerObserver(): void {
+    const container = this.containerRef.nativeElement;
+
+    const observer = new MutationObserver(mutations => {
+      // Look for pose-viewer elements
+      const poseViewer = container.querySelector('pose-viewer');
+      if (poseViewer && poseViewer !== this.currentPoseViewer) {
+        console.log('[Renderer] New pose-viewer detected, setting up event listeners');
+        this.subscribeToPoseViewer(poseViewer as HTMLElement);
+      }
+    });
+
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+    });
+
+    // Also check immediately in case it's already there
+    const existingPoseViewer = container.querySelector('pose-viewer');
+    if (existingPoseViewer) {
+      this.subscribeToPoseViewer(existingPoseViewer as HTMLElement);
+    }
+
+    // Clean up observer on destroy
+    this.destroy$.subscribe(() => observer.disconnect());
+  }
+
+  /**
+   * Subscribe to pose-viewer events (ended$, firstRender$, etc.)
+   */
+  private subscribeToPoseViewer(poseViewer: HTMLElement): void {
+    // Unsubscribe from previous pose-viewer
+    if (this.poseViewerSubscription) {
+      this.poseViewerSubscription.unsubscribe();
+    }
+
+    this.currentPoseViewer = poseViewer;
+
+    // Listen for ended$ event - this is the key event for animation completion
+    this.poseViewerSubscription = fromEvent(poseViewer, 'ended$')
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.ngZone.run(() => {
+          this.onAnimationEnded();
+        });
+      });
+
+    // Also listen for firstRender$ to know when animation actually starts
+    fromEvent(poseViewer, 'firstRender$')
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.ngZone.run(() => {
+          console.log('[Renderer] Animation first render');
+          this.animationStartTime = Date.now() / 1000;
+        });
+      });
+
+    console.log('[Renderer] Subscribed to pose-viewer events');
+  }
+
+  /**
+   * Called when the pose-viewer emits ended$ event
+   */
+  private onAnimationEnded(): void {
+    console.log(`[Renderer] Animation ended for chunk ${this.currentChunkIndex + 1}`);
+
+    // Clear the fallback timeout
+    if (this.animationFallbackTimeout) {
+      clearTimeout(this.animationFallbackTimeout);
+      this.animationFallbackTimeout = null;
+    }
+
+    this.isAnimating = false;
+
+    // Check if there are more chunks to play
+    if (this.currentChunkIndex < this.chunks.length - 1) {
+      // Advance to next chunk
+      this.playChunk(this.currentChunkIndex + 1);
+    } else {
+      console.log('[Renderer] All chunks completed');
+      // Don't stop immediately - wait for more chunks or idle timeout
+    }
+  }
+
+  /**
+   * Start idle detection - stops playback if no new chunks arrive
+   */
+  private startIdleDetection(): void {
+    interval(1000)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        if (this.isPlaying && this.lastChunkReceivedTime > 0) {
+          const now = Date.now() / 1000;
+          this.idleSeconds = now - this.lastChunkReceivedTime;
+
+          // If we've been idle too long and finished all chunks, stop
+          if (
+            this.idleSeconds > this.IDLE_TIMEOUT_SECONDS &&
+            this.currentChunkIndex >= this.chunks.length - 1 &&
+            !this.isAnimating
+          ) {
+            console.log(`[Renderer] Idle timeout (${this.IDLE_TIMEOUT_SECONDS}s) - stopping playback`);
+            this.stopPlayback();
+          }
+        }
+      });
   }
 
   private connectToDaemon(): void {
@@ -271,80 +423,72 @@ export class RendererComponent implements OnInit, OnDestroy {
     this.currentChunkIndex = -1;
     this.currentTime = 0;
     this.pausedAt = 0;
-    console.log('⏹️ Playback stopped');
+    this.isAnimating = false;
+    this.idleSeconds = 0;
+
+    if (this.animationFallbackTimeout) {
+      clearTimeout(this.animationFallbackTimeout);
+      this.animationFallbackTimeout = null;
+    }
+
+    console.log('[Renderer] Playback stopped');
   }
 
   private findChunkIndexAtTime(time: number): number {
-    for (let i = 0; i < this.chunks.length; i++) {
-      const chunk = this.chunks[i];
-      const nextChunk = this.chunks[i + 1];
-
-      const chunkEnd = nextChunk ? nextChunk.timestamp : chunk.timestamp + this.ESTIMATED_ANIMATION_TIME;
-
-      if (time >= chunk.timestamp && time < chunkEnd) {
+    // Find the chunk whose timestamp is closest to but not exceeding the target time
+    for (let i = this.chunks.length - 1; i >= 0; i--) {
+      if (this.chunks[i].timestamp <= time) {
         return i;
       }
     }
-
-    // If we're past all chunks, return the last one
-    return this.chunks.length - 1;
-  }
-
-  private startPlaybackLoop(): void {
-    const loop = () => {
-      if (this.isPlaying && this.chunks.length > 0) {
-        const now = Date.now() / 1000;
-        this.currentTime = now - this.startTime;
-
-        // If we haven't started yet, play the first chunk
-        if (this.currentChunkIndex === -1 && this.chunks.length > 0) {
-          this.playChunk(0);
-        }
-        // Check if we should advance to the next chunk
-        else if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length - 1) {
-          const timeSinceLastAnimation = now - this.animationStartTime;
-
-          // Advance if enough time has passed
-          if (timeSinceLastAnimation >= this.MIN_CHUNK_DURATION) {
-            const nextIndex = this.currentChunkIndex + 1;
-            this.playChunk(nextIndex);
-          }
-        }
-        // Check if we're completely done
-        else if (this.currentChunkIndex >= this.chunks.length - 1) {
-          const timeSinceLastAnimation = now - this.animationStartTime;
-          if (timeSinceLastAnimation > this.ESTIMATED_ANIMATION_TIME) {
-            console.log('✓ Playback complete - all animations finished');
-            this.stopPlayback();
-          }
-        }
-      }
-
-      this.animationFrameId = requestAnimationFrame(loop);
-    };
-
-    loop();
+    return 0;
   }
 
   private playChunk(index: number): void {
-    if (index < 0 || index >= this.chunks.length || index === this.currentChunkIndex) {
+    if (index < 0 || index >= this.chunks.length) {
+      return;
+    }
+
+    // Don't interrupt current animation unless we're way behind
+    if (this.isAnimating && index === this.currentChunkIndex) {
+      return;
+    }
+
+    // Enforce minimum animation time
+    const now = Date.now() / 1000;
+    const timeSinceStart = now - this.animationStartTime;
+    if (this.isAnimating && timeSinceStart < this.MIN_ANIMATION_TIME) {
+      console.log(
+        `[Renderer] Waiting for min animation time (${timeSinceStart.toFixed(1)}s < ${this.MIN_ANIMATION_TIME}s)`
+      );
       return;
     }
 
     this.currentChunkIndex = index;
     const chunk = this.chunks[index];
-    const now = Date.now() / 1000;
 
     this.isAnimating = true;
     this.animationStartTime = now;
 
-    console.log(`🎬 Playing chunk ${index + 1}/${this.chunks.length}: "${chunk.text}"`);
+    console.log(`[Renderer] Playing chunk ${index + 1}/${this.chunks.length}: "${chunk.text}"`);
     this.store.dispatch(new SetSpokenLanguageText(chunk.text));
+
+    // Set up fallback timeout in case ended$ doesn't fire
+    if (this.animationFallbackTimeout) {
+      clearTimeout(this.animationFallbackTimeout);
+    }
+    this.animationFallbackTimeout = setTimeout(() => {
+      if (this.isAnimating && this.currentChunkIndex === index) {
+        console.log(`[Renderer] Fallback timeout for chunk ${index + 1} - advancing`);
+        this.onAnimationEnded();
+      }
+    }, this.MAX_ANIMATION_TIME * 1000);
   }
 
   getCurrentChunkText(): string {
     if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length) {
-      return this.chunks[this.currentChunkIndex].text.substring(0, 50) + '...';
+      const text = this.chunks[this.currentChunkIndex].text;
+      return text.length > 50 ? text.substring(0, 50) + '...' : text;
     }
     return '';
   }
