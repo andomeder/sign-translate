@@ -27,12 +27,14 @@ interface Chunk {
   standalone: true,
   imports: [SignedLanguageOutputComponent, CommonModule],
   template: `
-    <div class="renderer-container">
+    <div class="renderer-container" #containerRef>
       <app-signed-language-output></app-signed-language-output>
       <div class="debug-info" *ngIf="showDebug">
-        <div>Playback: {{ isPlaying ? '▶️' : '⏸️' }}</div>
+        <div>Playback: {{ isPlaying ? 'PLAY' : 'STOP' }}</div>
         <div>Chunk: {{ currentChunkIndex + 1 }}/{{ chunks.length }}</div>
-        <div>Animating: {{ isAnimating ? '🎨' : '✅' }}</div>
+        <div>Animating: {{ isAnimating ? 'YES' : 'NO' }}</div>
+        <div>Queue: {{ chunks.length - currentChunkIndex - 1 }} pending</div>
+        <div>Idle: {{ idleSeconds.toFixed(0) }}s</div>
         <div *ngIf="chunks.length > 0">Text: {{ getCurrentChunkText() }}</div>
       </div>
     </div>
@@ -66,6 +68,7 @@ interface Chunk {
         font-family: monospace;
         font-size: 12px;
         max-width: 300px;
+        z-index: 1000;
       }
 
       .debug-info div {
@@ -277,13 +280,13 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
       this.ws = new WebSocket('ws://localhost:8765');
 
       this.ws.onopen = () => {
-        console.log('✓ Connected to daemon');
+        console.log('[Renderer] Connected to daemon');
       };
 
       this.ws.onmessage = event => {
         try {
           const data = JSON.parse(event.data);
-          console.log('📥 Received from daemon:', data.type);
+          console.log('[Renderer] Received:', data.type);
 
           switch (data.type) {
             case 'PLAYBACK_QUEUE':
@@ -309,29 +312,29 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
               break;
             case 'INFO':
             case 'STATUS':
-              console.log('ℹ️', data.message);
+              console.log('[Renderer] Info:', data.message);
               break;
           }
         } catch (error) {
-          console.error('Failed to parse message:', error);
+          console.error('[Renderer] Failed to parse message:', error);
         }
       };
 
       this.ws.onerror = error => {
-        console.error('WebSocket error:', error);
+        console.error('[Renderer] WebSocket error:', error);
       };
 
       this.ws.onclose = () => {
-        console.log('🔌 Disconnected from daemon');
+        console.log('[Renderer] Disconnected from daemon');
         setTimeout(() => this.connectToDaemon(), 5000);
       };
     } catch (error) {
-      console.error('Failed to connect to daemon:', error);
+      console.error('[Renderer] Failed to connect to daemon:', error);
     }
   }
 
   private loadQueue(chunks: Chunk[], serverStartTime?: number): void {
-    console.log(`📋 Loading queue with ${chunks.length} chunks`);
+    console.log(`[Renderer] Loading queue with ${chunks.length} chunks`);
     console.log(
       'Chunks:',
       chunks.map(c => `t=${c.timestamp}s: "${c.text.substring(0, 30)}..."`)
