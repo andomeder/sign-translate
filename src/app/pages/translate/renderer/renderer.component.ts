@@ -339,41 +339,54 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
 
     this.chunks = chunks.sort((a, b) => a.timestamp - b.timestamp);
     this.currentChunkIndex = -1;
+    this.lastChunkReceivedTime = Date.now() / 1000;
+    this.idleSeconds = 0;
 
     // Start playback synchronized with server time
     const now = Date.now() / 1000;
     this.startTime = serverStartTime || now;
     this.isPlaying = true;
 
-    console.log(`▶️ Playback started at ${this.startTime}, current time: ${now}, chunks: ${this.chunks.length}`);
+    console.log(`[Renderer] Playback started, chunks: ${this.chunks.length}`);
+
+    // Play the first chunk immediately
+    if (this.chunks.length > 0) {
+      this.playChunk(0);
+    }
   }
 
   private appendChunks(newChunks: Chunk[]): void {
-    console.log(`➕ Appending ${newChunks.length} chunks to existing queue`);
-    console.log(
-      'New chunks:',
-      newChunks.map(c => `t=${c.timestamp}s: "${c.text}"`)
-    );
+    console.log(`[Renderer] Appending ${newChunks.length} chunks`);
+    this.lastChunkReceivedTime = Date.now() / 1000;
+    this.idleSeconds = 0;
 
-    // If we don't have a playback session yet (missed the initial QUEUE),
-    // treat this as the first queue
+    // If we don't have a playback session yet, treat this as the first queue
     if (!this.isPlaying && this.chunks.length === 0) {
-      console.log('⚠️ No active playback - treating append as new queue');
+      console.log('[Renderer] No active playback - treating append as new queue');
       this.chunks = [...newChunks];
       this.chunks.sort((a, b) => a.timestamp - b.timestamp);
       this.currentChunkIndex = -1;
       this.startTime = Date.now() / 1000;
       this.isPlaying = true;
-      console.log(`▶️ Started playback with ${this.chunks.length} chunks`);
+
+      if (this.chunks.length > 0) {
+        this.playChunk(0);
+      }
       return;
     }
 
     // Add new chunks to existing queue
+    const previousLength = this.chunks.length;
     this.chunks.push(...newChunks);
     this.chunks.sort((a, b) => a.timestamp - b.timestamp);
 
-    console.log(`📋 Total chunks now: ${this.chunks.length}`);
-    console.log(`Current playback time: ${this.currentTime.toFixed(1)}s, on chunk ${this.currentChunkIndex + 1}`);
+    console.log(`[Renderer] Total chunks: ${this.chunks.length}, current: ${this.currentChunkIndex + 1}`);
+
+    // If we were waiting for more chunks (finished all previous), start the new ones
+    if (!this.isAnimating && this.currentChunkIndex >= previousLength - 1 && this.chunks.length > previousLength) {
+      console.log('[Renderer] Was idle, starting new chunk');
+      this.playChunk(this.currentChunkIndex + 1);
+    }
   }
 
   private startPlayback(startTime?: number): void {
@@ -381,23 +394,35 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     this.startTime = startTime || Date.now() / 1000;
     this.currentChunkIndex = -1;
     this.pausedAt = 0;
-    console.log('▶️ Playback started');
+    this.lastChunkReceivedTime = Date.now() / 1000;
+    console.log('[Renderer] Playback started');
   }
 
   private pausePlayback(): void {
     if (this.isPlaying) {
       this.pausedAt = this.currentTime;
       this.isPlaying = false;
-      console.log('⏸️ Playback paused at', this.currentTime.toFixed(1), 's');
+
+      // Pause the pose-viewer if it exists
+      if (this.currentPoseViewer) {
+        (this.currentPoseViewer as any).pause?.();
+      }
+
+      console.log('[Renderer] Playback paused');
     }
   }
 
   private resumePlayback(): void {
     if (!this.isPlaying) {
-      // Adjust start time to account for pause
       this.startTime = Date.now() / 1000 - this.pausedAt;
       this.isPlaying = true;
-      console.log('▶️ Playback resumed from', this.pausedAt.toFixed(1), 's');
+
+      // Resume the pose-viewer if it exists
+      if (this.currentPoseViewer) {
+        (this.currentPoseViewer as any).play?.();
+      }
+
+      console.log('[Renderer] Playback resumed');
     }
   }
 
@@ -407,14 +432,13 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     this.pausedAt = time;
 
     // Find the chunk that should be playing at this time
-    this.currentChunkIndex = this.findChunkIndexAtTime(time);
+    const targetIndex = this.findChunkIndexAtTime(time);
 
-    // Display the chunk at this time
-    if (this.currentChunkIndex >= 0 && this.currentChunkIndex < this.chunks.length) {
-      const chunk = this.chunks[this.currentChunkIndex];
-      this.store.dispatch(new SetSpokenLanguageText(chunk.text));
-      console.log(`⏩ Seeked to ${time.toFixed(1)}s, displaying chunk ${this.currentChunkIndex + 1}: "${chunk.text}"`);
+    if (targetIndex !== this.currentChunkIndex && targetIndex >= 0 && targetIndex < this.chunks.length) {
+      this.playChunk(targetIndex);
     }
+
+    console.log(`[Renderer] Seeked to ${time.toFixed(1)}s, chunk ${targetIndex + 1}`);
   }
 
   private stopPlayback(): void {
