@@ -331,6 +331,8 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
     } catch (error) {
       console.error('[Renderer] Failed to connect to daemon:', error);
     }
+    this.lastChunkReceivedTime = Date.now() / 1000;
+    this.idleSeconds = 0;
   }
 
   private loadQueue(chunks: Chunk[], serverStartTime?: number): void {
@@ -342,8 +344,6 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
 
     this.chunks = chunks.sort((a, b) => a.timestamp - b.timestamp);
     this.currentChunkIndex = -1;
-    this.lastChunkReceivedTime = Date.now() / 1000;
-    this.idleSeconds = 0;
 
     // Start playback synchronized with server time
     const now = Date.now() / 1000;
