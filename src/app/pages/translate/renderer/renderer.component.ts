@@ -136,8 +136,8 @@ export class RendererComponent implements OnInit, OnDestroy, AfterViewInit {
   private readonly MIN_ANIMATION_TIME = 0.5; // Minimum 0.5 seconds before allowing advance
 
   // Queue management
-  private readonly MAX_QUEUE_SIZE = 10; // Compress queue if more than 10 chunks pending
-  private readonly QUEUE_COMPRESSION_TARGET = 5; // Compress down to 5 chunks
+  private readonly MAX_QUEUE_SIZE = 5; // Compress queue if more than 5 chunks pending
+  private readonly QUEUE_COMPRESSION_TARGET = 3; // Compress down to 3 chunks
 
   // Track animation start for minimum time enforcement
   private animationStartTime = 0;
